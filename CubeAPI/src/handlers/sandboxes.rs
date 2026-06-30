@@ -8,6 +8,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use chrono::{DateTime, Utc};
 
 use crate::{
     error::AppResult,
@@ -19,6 +20,47 @@ use crate::{
     },
     state::AppState,
 };
+use uuid::Uuid;
+
+fn new_operation_id() -> String {
+    Uuid::new_v4().to_string()
+}
+
+fn lifecycle_event(
+    event: &str,
+    phase: &str,
+    started_at: DateTime<Utc>,
+    operation_id: &str,
+) -> LogEvent {
+    let timestamp = if phase == "start" {
+        started_at
+    } else {
+        Utc::now()
+    };
+    let mut log = LogEvent::new(LogLevel::Info, event);
+    log.timestamp = timestamp;
+    log.field("phase", phase)
+        .field("operation_id", operation_id)
+        .field("start_time", started_at.to_rfc3339())
+}
+
+fn lifecycle_end_event(
+    event: &str,
+    started_at: DateTime<Utc>,
+    operation_id: &str,
+    success: bool,
+) -> LogEvent {
+    let ended_at = Utc::now();
+    let duration_ms = (ended_at - started_at).num_milliseconds().max(0);
+    let mut log = LogEvent::new(LogLevel::Info, event);
+    log.timestamp = ended_at;
+    log.field("phase", "end")
+        .field("operation_id", operation_id)
+        .field("start_time", started_at.to_rfc3339())
+        .field("end_time", ended_at.to_rfc3339())
+        .field_value("duration_ms", duration_ms)
+        .field_value("success", success)
+}
 
 // ─── GET /sandboxes ───────────────────────────────────────────────────────────
 
@@ -171,14 +213,39 @@ pub async fn create_sandbox(
         )
         .await;
 
-    let created = state.services.sandboxes.create_sandbox(body).await?;
+    let started_at = Utc::now();
+    let operation_id = new_operation_id();
+    state
+        .logger
+        .log(
+            lifecycle_event("sandbox.created", "start", started_at, &operation_id)
+                .field("template_id", &template_id)
+                .field_value("timeout", timeout),
+        )
+        .await;
+
+    let created = match state.services.sandboxes.create_sandbox(body).await {
+        Ok(created) => created,
+        Err(error) => {
+            let message = error.to_string();
+            state
+                .logger
+                .log(
+                    lifecycle_end_event("sandbox.created", started_at, &operation_id, false)
+                        .field("template_id", &template_id)
+                        .field("error", &message),
+                )
+                .await;
+            return Err(error);
+        }
+    };
     let sandbox_id = created.sandbox_id.clone();
 
     tracing::info!(sandbox_id = %sandbox_id, template_id = %template_id, "create_sandbox: success");
     state
         .logger
         .log(
-            LogEvent::new(LogLevel::Info, "sandbox.created")
+            lifecycle_end_event("sandbox.created", started_at, &operation_id, true)
                 .field("sandbox_id", &sandbox_id)
                 .field("template_id", &template_id),
         )
@@ -214,12 +281,36 @@ pub async fn kill_sandbox(
         )
         .await;
 
-    state.services.sandboxes.kill_sandbox(&sandbox_id).await?;
+    let started_at = Utc::now();
+    let operation_id = new_operation_id();
+    state
+        .logger
+        .log(
+            lifecycle_event("sandbox.deleted", "start", started_at, &operation_id)
+                .field("sandbox_id", &sandbox_id),
+        )
+        .await;
+
+    if let Err(error) = state.services.sandboxes.kill_sandbox(&sandbox_id).await {
+        let message = error.to_string();
+        state
+            .logger
+            .log(
+                lifecycle_end_event("sandbox.deleted", started_at, &operation_id, false)
+                    .field("sandbox_id", &sandbox_id)
+                    .field("error", &message),
+            )
+            .await;
+        return Err(error);
+    }
 
     tracing::info!(sandbox_id = %sandbox_id, "kill_sandbox: success");
     state
         .logger
-        .log(LogEvent::new(LogLevel::Info, "sandbox.deleted").field("sandbox_id", &sandbox_id))
+        .log(
+            lifecycle_end_event("sandbox.deleted", started_at, &operation_id, true)
+                .field("sandbox_id", &sandbox_id),
+        )
         .await;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -252,12 +343,36 @@ pub async fn pause_sandbox(
         )
         .await;
     tracing::info!(sandbox_id = %sandbox_id, "pause sandbox request");
-    state.services.sandboxes.pause_sandbox(&sandbox_id).await?;
+    let started_at = Utc::now();
+    let operation_id = new_operation_id();
+    state
+        .logger
+        .log(
+            lifecycle_event("sandbox.paused", "start", started_at, &operation_id)
+                .field("sandbox_id", &sandbox_id),
+        )
+        .await;
+
+    if let Err(error) = state.services.sandboxes.pause_sandbox(&sandbox_id).await {
+        let message = error.to_string();
+        state
+            .logger
+            .log(
+                lifecycle_end_event("sandbox.paused", started_at, &operation_id, false)
+                    .field("sandbox_id", &sandbox_id)
+                    .field("error", &message),
+            )
+            .await;
+        return Err(error);
+    }
 
     tracing::info!(sandbox_id = %sandbox_id, "pause_sandbox: success");
     state
         .logger
-        .log(LogEvent::new(LogLevel::Info, "sandbox.paused").field("sandbox_id", &sandbox_id))
+        .log(
+            lifecycle_end_event("sandbox.paused", started_at, &operation_id, true)
+                .field("sandbox_id", &sandbox_id),
+        )
         .await;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -293,16 +408,46 @@ pub async fn resume_sandbox(
         )
         .await;
     tracing::info!(sandbox_id = %sandbox_id, "resume sandbox request");
-    let sandbox = state
+    let started_at = Utc::now();
+    let operation_id = new_operation_id();
+    state
+        .logger
+        .log(
+            lifecycle_event("sandbox.resumed", "start", started_at, &operation_id)
+                .field("sandbox_id", &sandbox_id)
+                .field_value("timeout", body.timeout),
+        )
+        .await;
+
+    let sandbox = match state
         .services
         .sandboxes
         .resume_sandbox(&sandbox_id, body.timeout)
-        .await?;
+        .await
+    {
+        Ok(sandbox) => sandbox,
+        Err(error) => {
+            let message = error.to_string();
+            state
+                .logger
+                .log(
+                    lifecycle_end_event("sandbox.resumed", started_at, &operation_id, false)
+                        .field("sandbox_id", &sandbox_id)
+                        .field("error", &message),
+                )
+                .await;
+            return Err(error);
+        }
+    };
 
     tracing::info!(sandbox_id = %sandbox_id, "resume_sandbox: success");
     state
         .logger
-        .log(LogEvent::new(LogLevel::Info, "sandbox.resumed").field("sandbox_id", &sandbox_id))
+        .log(
+            lifecycle_end_event("sandbox.resumed", started_at, &operation_id, true)
+                .field("sandbox_id", &sandbox_id)
+                .field("template_id", &sandbox.template_id),
+        )
         .await;
 
     Ok((StatusCode::CREATED, Json(sandbox)))

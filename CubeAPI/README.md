@@ -68,8 +68,24 @@ cargo build --release
 |----------|---------|-------------|
 | `CUBE_API_BIND` | `0.0.0.0:3000` | Listen address |
 | `LOG_LEVEL` | `info` | Log level |
+| `CUBE_API_WEBHOOK_ENABLED` | `false` | Enable async Webhook event delivery |
+| `CUBE_API_WEBHOOK_ENDPOINTS_JSON` | unset | JSON array of Webhook endpoints |
+| `CUBE_API_WEBHOOK_QUEUE_SIZE` | `1024` | Max queued Webhook events |
+| `CUBE_API_WEBHOOK_WORKERS` | `4` | Background Webhook worker tasks |
+| `CUBE_API_WEBHOOK_TIMEOUT_SECS` | `3` | Per-delivery HTTP timeout |
+| `CUBE_API_WEBHOOK_MAX_RETRIES` | `3` | Retries after the first delivery attempt |
 
 CubeAPI also exposes dashboard-oriented routes under `/cubeapi/v1`. The one-click WebUI is served by a separate nginx container on port `12088`; that nginx instance serves the packaged static dashboard and proxies same-origin `/cubeapi` requests back to the host CubeAPI through Docker `host-gateway`.
+
+Webhook endpoint example:
+
+```bash
+export CUBE_API_WEBHOOK_ENABLED=true
+export CUBE_API_WEBHOOK_ENDPOINTS_JSON='[{"url":"http://127.0.0.1:9000/webhook","events":["sandbox.created","sandbox.deleted","sandbox.paused","sandbox.resumed"],"secret":"change-me"}]'
+```
+
+Each sandbox lifecycle event is delivered twice with `phase=start` and
+`phase=end`. See `docs/guide/webhooks.md` and `examples/webhook-receiver/`.
 
 ---
 
@@ -132,4 +148,3 @@ python pause.py
 python create_with_mount.py
 python browser.py
 python test.py
-

@@ -199,7 +199,10 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn async_main(cfg: config::ServerConfig, debug: bool) -> anyhow::Result<()> {
-    use logging::{arc, file::FileLogger, filtered::FilteredLogger, multi::MultiLogger, LogLevel};
+    use logging::{
+        arc, file::FileLogger, filtered::FilteredLogger, http::HttpLoggerConfig,
+        multi::MultiLogger, LogLevel,
+    };
 
     // ── Logger ────────────────────────────────────────────────────────────
     let min_level = if debug {
@@ -210,15 +213,20 @@ async fn async_main(cfg: config::ServerConfig, debug: bool) -> anyhow::Result<()
 
     let file_logger = FileLogger::new(cfg.log_dir.clone(), cfg.log_prefix.clone()).await?;
 
-    // FilteredLogger gates by level → MultiLogger fans out to file (+ future backends)
-    let logger: logging::ArcLogger = arc(FilteredLogger::new(
-        arc(
-            MultiLogger::new().add(arc(file_logger)), // Uncomment to add more backends:
-                                                      // .add(arc(logging::http::HttpLogger::new(Default::default())))
-                                                      // .add(arc(logging::otlp::OtlpLogger::new()))
-        ),
-        min_level,
-    ));
+    let mut multi_logger = MultiLogger::new().add(arc(file_logger));
+    if let Some(webhook_config) = HttpLoggerConfig::from_server_config(&cfg)? {
+        let endpoint_count = webhook_config.endpoints.len();
+        let worker_count = webhook_config.workers;
+        multi_logger = multi_logger.add(arc(logging::http::HttpLogger::new(webhook_config)?));
+        tracing::info!(
+            endpoints = endpoint_count,
+            workers = worker_count,
+            "webhook logger enabled"
+        );
+    }
+
+    // FilteredLogger gates by level → MultiLogger fans out to all backends.
+    let logger: logging::ArcLogger = arc(FilteredLogger::new(arc(multi_logger), min_level));
 
     tracing::info!(
         log_dir = %cfg.log_dir,

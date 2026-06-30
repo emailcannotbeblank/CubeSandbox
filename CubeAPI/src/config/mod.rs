@@ -71,6 +71,45 @@ pub struct ServerConfig {
     /// Example: mysql://cube:cube_pass@127.0.0.1:3306/cube_mvp
     #[serde(default = "default_database_url")]
     pub database_url: Option<String>,
+
+    /// Enable Webhook delivery for structured lifecycle events.
+    ///
+    /// Env var: `CUBE_API_WEBHOOK_ENABLED` (default: false).
+    #[serde(default = "default_webhook_enabled")]
+    pub webhook_enabled: bool,
+
+    /// JSON array of Webhook endpoints.
+    ///
+    /// Env var: `CUBE_API_WEBHOOK_ENDPOINTS_JSON`.
+    ///
+    /// Example:
+    /// `[{"url":"http://127.0.0.1:9000/webhook","events":["sandbox.created"],"secret":"s"}]`
+    #[serde(default = "default_webhook_endpoints_json")]
+    pub webhook_endpoints_json: Option<String>,
+
+    /// Max lifecycle events buffered before new Webhook events are dropped.
+    ///
+    /// Env var: `CUBE_API_WEBHOOK_QUEUE_SIZE` (default: 1024).
+    #[serde(default = "default_webhook_queue_size")]
+    pub webhook_queue_size: usize,
+
+    /// Number of background Webhook worker tasks.
+    ///
+    /// Env var: `CUBE_API_WEBHOOK_WORKERS` (default: 4).
+    #[serde(default = "default_webhook_workers")]
+    pub webhook_workers: usize,
+
+    /// Per-delivery HTTP timeout in seconds.
+    ///
+    /// Env var: `CUBE_API_WEBHOOK_TIMEOUT_SECS` (default: 3).
+    #[serde(default = "default_webhook_timeout_secs")]
+    pub webhook_timeout_secs: u64,
+
+    /// Number of retries after the first Webhook delivery attempt.
+    ///
+    /// Env var: `CUBE_API_WEBHOOK_MAX_RETRIES` (default: 3).
+    #[serde(default = "default_webhook_max_retries")]
+    pub webhook_max_retries: usize,
 }
 
 fn default_bind() -> String {
@@ -108,6 +147,54 @@ fn default_database_url() -> Option<String> {
     std::env::var("DATABASE_URL")
         .ok()
         .or_else(default_cube_sandbox_mysql_url)
+}
+
+fn default_webhook_enabled() -> bool {
+    std::env::var("CUBE_API_WEBHOOK_ENABLED")
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn default_webhook_endpoints_json() -> Option<String> {
+    std::env::var("CUBE_API_WEBHOOK_ENDPOINTS_JSON")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+}
+
+fn default_webhook_queue_size() -> usize {
+    std::env::var("CUBE_API_WEBHOOK_QUEUE_SIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(1024)
+}
+
+fn default_webhook_workers() -> usize {
+    std::env::var("CUBE_API_WEBHOOK_WORKERS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(4)
+}
+
+fn default_webhook_timeout_secs() -> u64 {
+    std::env::var("CUBE_API_WEBHOOK_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(3)
+}
+
+fn default_webhook_max_retries() -> usize {
+    std::env::var("CUBE_API_WEBHOOK_MAX_RETRIES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3)
 }
 
 fn default_cube_sandbox_mysql_url() -> Option<String> {
@@ -148,6 +235,12 @@ impl Default for ServerConfig {
             log_prefix: default_log_prefix(),
             auth_callback_url: None,
             database_url: default_database_url(),
+            webhook_enabled: default_webhook_enabled(),
+            webhook_endpoints_json: default_webhook_endpoints_json(),
+            webhook_queue_size: default_webhook_queue_size(),
+            webhook_workers: default_webhook_workers(),
+            webhook_timeout_secs: default_webhook_timeout_secs(),
+            webhook_max_retries: default_webhook_max_retries(),
         }
     }
 }
